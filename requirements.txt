@@ -1,5 +1,3 @@
-python-pptx
-matplotlib
-schemdraw
-numpy
-pyyaml
+matplotlib>=3.8      # 그림·아이콘 그리기
+python-pptx>=1.0     # pptx 조립
+pyyaml>=6.0          # slides.yaml 읽기

@@ -39,8 +39,22 @@ assets/           생성된 그림·아이콘 (자동 생성)
 output/           완성된 pptx
 ```
 
+## 사용한 외부 도구
+| 도구 | 용도 | 필수 여부 |
+|------|------|----------|
+| [Python](https://www.python.org/) 3.10+ | 모든 스크립트 실행 | 필수 |
+| [matplotlib](https://matplotlib.org/) | 그림·아이콘을 코드로 그려 PNG로 저장 (`scripts/figures/`) | 필수 |
+| [python-pptx](https://python-pptx.readthedocs.io/) | `slides.yaml` + 그림 → pptx 조립, 막대 차트·발표자 노트 생성 | 필수 |
+| [PyYAML](https://pyyaml.org/) | `content/slides.yaml` 읽기 | 필수 |
+| 맑은 고딕 (Malgun Gothic) | 그림과 슬라이드의 한글 글꼴 (Windows 기본 탑재) | 필수 |
+| Microsoft PowerPoint | `scripts/preview.ps1`이 COM으로 pptx를 열어 슬라이드를 PNG로 내보냄 (검수용) | 선택 (Windows) |
+| [GitHub CLI](https://cli.github.com/) (`gh`) | 이 저장소 생성·업로드 | 선택 |
+| [Claude Code](https://claude.com/claude-code) | 기획, 그림 코드, 조립 스크립트 작성과 미리보기 검수 | 제작 시 사용 |
+
+외부 웹 API나 유료 서비스, 저작권 있는 이미지는 쓰지 않았습니다. 모든 그림은 이 저장소의 코드로 다시 만들 수 있습니다.
+
 ## 빌드
-Python 3.10+ 와 한글 폰트(맑은 고딕)가 필요합니다.
+위 표의 필수 도구가 필요합니다.
 ```
 pip install -r requirements.txt
 python scripts/build_all.py
