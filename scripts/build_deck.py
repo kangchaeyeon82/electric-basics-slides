@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 
 import yaml
+from lxml import etree
+from PIL import Image
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
@@ -14,6 +16,10 @@ from pptx.util import Inches, Pt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "common"))
 import style as S  # noqa: E402
+import anim  # noqa: E402
+
+FLOW_DIR = S.ROOT / "assets" / "flow"      # Google Flow 로 만든 분위기 이미지 (없으면 기본 디자인)
+VIDEO_DIR = S.ROOT / "assets" / "videos"   # manim 영상 (mp4 + 포스터 png)
 
 SLIDE_W, SLIDE_H = 13.333, 7.5
 MARGIN = 0.67
@@ -115,6 +121,62 @@ def add_image(slide, path, x, y, w=None, h=None, name=None):
     return pic
 
 
+def set_alpha(shape, opacity):
+    """도형 채우기 불투명도 (0~1)."""
+    clr = shape.fill._xPr.find(qn("a:solidFill"))[0]
+    etree.SubElement(clr, qn("a:alpha")).set("val", str(int(opacity * 100000)))
+
+
+def flow_image(name):
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        p = FLOW_DIR / f"{name}{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def full_bleed(slide, path, overlay=(0.88, 0.15)):
+    """슬라이드 전체를 채우는 배경 사진 (16:9 로 가운데 잘라냄) + 어두운 덮개."""
+    pic = slide.shapes.add_picture(str(path), 0, 0, Inches(SLIDE_W), Inches(SLIDE_H))
+    pic.name = "flow_bg"
+    iw, ih = Image.open(path).size
+    target = SLIDE_W / SLIDE_H
+    if iw / ih > target:  # 옆으로 넓다 → 좌우를 자름
+        cut = (1 - target * ih / iw) / 2
+        pic.crop_left = pic.crop_right = cut
+    else:
+        cut = (1 - iw / ih / target) / 2
+        pic.crop_top = pic.crop_bottom = cut
+    # 왼쪽(글자 자리)은 진하게, 오른쪽(사진 주인공)은 옅게 덮는 가로 그라데이션
+    shade = add_shape(slide, MSO_SHAPE.RECTANGLE, 0, 0, SLIDE_W, SLIDE_H, S.NIGHT, name="shade")
+    shade.fill.gradient()
+    shade.fill.gradient_angle = 0
+    for stop, pos, opacity in zip(shade.fill.gradient_stops, (0, 100000), (overlay[0], overlay[1])):
+        stop.color.rgb = hexrgb(S.NIGHT)
+        clr = stop._gs[0]
+        etree.SubElement(clr, qn("a:alpha")).set("val", str(int(opacity * 100000)))
+
+
+def video_duration_ms(path):
+    import av  # manim 설치 시 함께 설치됨
+    with av.open(str(path)) as c:
+        return int(c.duration / 1000) if c.duration else 10000
+
+
+def add_video(slide, name, x, y, w):
+    """manim 영상. 없으면 None."""
+    mp4, poster = VIDEO_DIR / f"{name}.mp4", VIDEO_DIR / f"{name}.png"
+    if not mp4.exists():
+        print(f"  ! 영상 없음: {mp4.name} (그림으로 대체)")
+        return None
+    h = w * S.FIG_FULL[1] / S.FIG_FULL[0]
+    mv = slide.shapes.add_movie(str(mp4), Inches(x), Inches(y), Inches(w), Inches(h),
+                                poster_frame_image=str(poster) if poster.exists() else None,
+                                mime_type="video/mp4")
+    mv.name = name
+    return mv.shape_id, video_duration_ms(mp4)
+
+
 def fig(name):
     return S.FIG_DIR / f"{name}.png"
 
@@ -147,20 +209,29 @@ def points_column(slide, points, x, y_top, w, y_bottom):
     gap = 0.25
     h = min(1.45, (y_bottom - y_top - gap * (n - 1)) / n)
     y = y_top + (y_bottom - y_top - (h * n + gap * (n - 1))) / 2
+    steps = []
     for i, pt in enumerate(points):
         col = COLOR_KEYS.get(pt.get("color", "ink"), S.INK)
-        card(slide, x, y, w, h, name=f"point{i + 1}")
-        add_shape(slide, MSO_SHAPE.OVAL, x + 0.28, y + 0.3, 0.22, 0.22, col)
-        add_text(slide, x + 0.65, y + 0.2, w - 0.85, 0.42, pt["head"], 19,
+        g = slide.shapes.add_group_shape()  # 카드 하나 = 그룹 하나 = 클릭 한 번
+        g.name = f"point{i + 1}"
+        card(g, x, y, w, h)
+        add_shape(g, MSO_SHAPE.OVAL, x + 0.28, y + 0.3, 0.22, 0.22, col)
+        add_text(g, x + 0.65, y + 0.2, w - 0.85, 0.42, pt["head"], 19,
                  TEXT_ON_WHITE.get(pt.get("color", "ink"), S.INK), bold=True, anchor=MSO_ANCHOR.MIDDLE)
-        add_text(slide, x + 0.65, y + 0.68, w - 0.85, h - 0.8, pt["body"], 15, S.INK)
+        add_text(g, x + 0.65, y + 0.68, w - 0.85, h - 0.8, pt["body"], 15, S.INK)
+        steps.append([g.shape_id])
         y += h + gap
+    return steps
 
 
 # ── 레이아웃별 ─────────────────────────────────────
 def build_cover(slide, d, end=False):
     background(slide, S.NIGHT)
-    add_image(slide, fig(d["figure"]), 6.7, 0.65, w=6.2, name="hero")
+    bg = flow_image("flow_end" if end else "flow_cover")
+    if bg:
+        full_bleed(slide, bg)
+    else:
+        add_image(slide, fig(d["figure"]), 6.7, 0.65, w=6.2, name="hero")
     add_text(slide, 0.9, 2.2, 6.2, 2.2, d["title"], 50 if not end else 56, "FFFFFF", bold=True,
              anchor=MSO_ANCHOR.BOTTOM, name="title", line_spacing=1.0)
     add_text(slide, 0.9, 4.65, 6.0, 0.6, d["subtitle"], 22, S.SPARK, name="subtitle")
@@ -170,16 +241,23 @@ def build_cover(slide, d, end=False):
 
 def build_section(slide, d):
     background(slide, S.NIGHT)
+    bg = flow_image(f"flow_sec{d['num']}")
+    if bg:
+        full_bleed(slide, bg)
     add_text(slide, 0.9, 1.55, 4.0, 1.5, d["num"], 96, S.SPARK, bold=True,
              anchor=MSO_ANCHOR.BOTTOM, name="num", line_spacing=0.9)
     add_text(slide, 0.9, 3.2, 7.6, 1.0, d["title"], 44, "FFFFFF", bold=True, name="title")
     add_text(slide, 0.9, 4.35, 7.6, 0.6, d["subtitle"], 20, "C9D0E2", name="subtitle")
-    add_image(slide, icon(d["icon"]), 9.1, 2.25, w=3.0, name="icon")
+    if not bg:
+        add_image(slide, icon(d["icon"]), 9.1, 2.25, w=3.0, name="icon")
 
 
 def build_full(slide, d):
     title_block(slide, d)
-    add_image(slide, fig(d["figure"]), MARGIN, 2.05, w=S.FIG_FULL[0], name="figure")
+    video = add_video(slide, d["video"], MARGIN, 2.05, S.FIG_FULL[0]) if d.get("video") else None
+    if not video:
+        add_image(slide, fig(d.get("figure") or d["video"]), MARGIN, 2.05, w=S.FIG_FULL[0], name="figure")
+    return {"video": video}
 
 
 def build_split(slide, d):
@@ -188,7 +266,7 @@ def build_split(slide, d):
     fw = fh * S.FIG_SPLIT[0] / S.FIG_SPLIT[1]
     add_image(slide, fig(d["figure"]), 0.55, 1.95, w=fw, h=fh, name="figure")
     px = 0.55 + fw + 0.4
-    points_column(slide, d["points"], px, 2.05, SLIDE_W - MARGIN - px, 6.95)
+    return {"steps": points_column(slide, d["points"], px, 2.05, SLIDE_W - MARGIN - px, 6.95)}
 
 
 def build_cards(slide, d):
@@ -196,6 +274,7 @@ def build_cards(slide, d):
     cards = d["cards"]
     n = len(cards)
     gap = 0.3
+    steps = []
     if n <= 5:  # 한 줄, 세로형 카드
         w = (CONTENT_W - gap * (n - 1)) / n
         y, h = 2.15, 4.55
@@ -203,13 +282,16 @@ def build_cards(slide, d):
         for i, c in enumerate(cards):
             x = MARGIN + i * (w + gap)
             col = TEXT_ON_WHITE.get(c.get("color", "ink"), S.INK)
-            card(slide, x, y, w, h, name=f"card{i + 1}")
-            add_image(slide, icon(c["icon"]), x + (w - isz) / 2, y + 0.45, w=isz, h=isz)
+            g = slide.shapes.add_group_shape()
+            g.name = f"card{i + 1}"
+            card(g, x, y, w, h)
+            add_image(g, icon(c["icon"]), x + (w - isz) / 2, y + 0.45, w=isz, h=isz)
             ty = y + 0.45 + isz + 0.35
             hs = 24 if n <= 3 else 20
-            add_text(slide, x + 0.2, ty, w - 0.4, 0.55, c["head"], hs, col, bold=True, align=PP_ALIGN.CENTER)
-            add_text(slide, x + 0.2, ty + 0.65, w - 0.4, h - (ty - y) - 0.8, c["body"],
+            add_text(g, x + 0.2, ty, w - 0.4, 0.55, c["head"], hs, col, bold=True, align=PP_ALIGN.CENTER)
+            add_text(g, x + 0.2, ty + 0.65, w - 0.4, h - (ty - y) - 0.8, c["body"],
                      17 if n <= 3 else 15, S.INK, align=PP_ALIGN.CENTER)
+            steps.append([g.shape_id])
     else:  # 2줄 x 3칸, 가로형 카드
         cols = 3
         w = (CONTENT_W - gap * (cols - 1)) / cols
@@ -218,14 +300,18 @@ def build_cards(slide, d):
             x = MARGIN + (i % cols) * (w + gap)
             y = 2.1 + (i // cols) * (h + gap)
             col = TEXT_ON_WHITE.get(c.get("color", "ink"), S.INK)
-            card(slide, x, y, w, h, name=f"card{i + 1}")
-            add_image(slide, icon(c["icon"]), x + 0.25, y + (h - 1.1) / 2, w=1.1, h=1.1)
+            g = slide.shapes.add_group_shape()
+            g.name = f"card{i + 1}"
+            card(g, x, y, w, h)
+            add_image(g, icon(c["icon"]), x + 0.25, y + (h - 1.1) / 2, w=1.1, h=1.1)
             # 제목·설명을 한 상자에 넣어 제목이 두 줄이 돼도 겹치지 않게 한다
             body = c["body"] if isinstance(c["body"], list) else [c["body"]]
-            add_text(slide, x + 1.55, y + 0.2, w - 1.75, h - 0.4,
+            add_text(g, x + 1.55, y + 0.2, w - 1.75, h - 0.4,
                      [(c["head"], {"size": 20, "color": col, "bold": True})]
                      + [(b, {"size": 15, "space_before": 6 if k == 0 else 0}) for k, b in enumerate(body)],
                      anchor=MSO_ANCHOR.MIDDLE)
+            steps.append([g.shape_id])
+    return {"steps": steps}
 
 
 def build_chart(slide, d):
@@ -266,8 +352,9 @@ def build_chart(slide, d):
         f = ser.points[i].format.fill
         f.solid()
         f.fore_color.rgb = hexrgb(S.RESIST if r[0] in top else (S.SAFE if r[1] <= 20 else "B9C1D1"))
-    points_column(slide, d["points"], x + w + 0.4, 2.2, SLIDE_W - MARGIN - (x + w + 0.4), 6.6)
+    steps = points_column(slide, d["points"], x + w + 0.4, 2.2, SLIDE_W - MARGIN - (x + w + 0.4), 6.6)
     add_text(slide, x, 7.0, w, 0.3, "※ 제품마다 다른 대략적인 값", 11, S.INK_SOFT)
+    return {"steps": steps}
 
 
 def build_quiz(slide, d):
@@ -277,17 +364,19 @@ def build_quiz(slide, d):
     items = d["items"]
     gap, h = 0.22, 1.12
     y = 1.65
+    steps = []
     for i, it in enumerate(items):
         card(slide, MARGIN, y, CONTENT_W, h, name=f"q{i + 1}")
         circle_label(slide, MARGIN + 0.6, y + h / 2, 0.62, S.INK, str(i + 1), 20)
-        if reveal:
-            add_text(slide, MARGIN + 1.2, y + 0.14, CONTENT_W - 3.0, h - 0.2,
-                     [(it["q"], {"size": 21, "bold": True}),
-                      (it["why"], {"size": 15, "color": S.INK_SOFT, "space_before": 4})],
-                     anchor=MSO_ANCHOR.MIDDLE)
+        if reveal:  # 문제는 보이고, 클릭할 때마다 정답(O/X + 이유)이 하나씩 나타남
+            add_text(slide, MARGIN + 1.2, y + 0.16, CONTENT_W - 3.0, 0.45, it["q"], 21, S.INK, bold=True)
             ok = it["a"] == "O"
-            circle_label(slide, SLIDE_W - MARGIN - 0.85, y + h / 2, 0.86, S.SAFE if ok else S.RESIST,
-                         "O" if ok else "X", 30, name=f"a{i + 1}")
+            g = slide.shapes.add_group_shape()
+            g.name = f"a{i + 1}"
+            add_text(g, MARGIN + 1.2, y + 0.64, CONTENT_W - 3.0, 0.35, it["why"], 15, S.INK_SOFT)
+            circle_label(g, SLIDE_W - MARGIN - 0.85, y + h / 2, 0.86, S.SAFE if ok else S.RESIST,
+                         "O" if ok else "X", 30)
+            steps.append([g.shape_id])
         else:
             add_text(slide, MARGIN + 1.2, y, CONTENT_W - 3.6, h, it["q"], 22, S.INK, bold=True,
                      anchor=MSO_ANCHOR.MIDDLE)
@@ -297,6 +386,7 @@ def build_quiz(slide, d):
                 c.line.color.rgb = hexrgb(col)
                 c.line.width = Pt(2.5)
         y += h + gap
+    return {"steps": steps}
 
 
 BUILDERS = {
@@ -320,7 +410,9 @@ def main():
     blank = prs.slide_layouts[6]
     for n, d in enumerate(data["slides"], start=1):
         slide = prs.slides.add_slide(blank)
-        BUILDERS[d["layout"]](slide, d)
+        fx = BUILDERS[d["layout"]](slide, d) or {}
+        if not d.get("static"):  # static: true 이면 애니메이션 없이
+            anim.set_timing(slide, fx.get("steps", []), fx.get("video"))
         if d["layout"] not in ("cover", "end", "section"):
             page_number(slide, n)
         if d.get("notes"):
